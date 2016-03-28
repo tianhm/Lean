@@ -115,15 +115,6 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                 // we already have a subscription for this symbol so don't re-add it
                 if (existingSubscriptions.Contains(symbol)) continue;
 
-                // ask the limiter if we can add another subscription at that resolution
-                string reason;
-                if (!_limiter.CanAddSubscription(settings.Resolution, out reason))
-                {
-                    _algorithm.Error(reason);
-                    Log.Trace("UniverseSelection.ApplyUniverseSelection(): Skipping adding subscriptions: " + reason);
-                    break;
-                }
-                
                 // create the new security, the algorithm thread will add this at the appropriate time
                 Security security;
                 if (!_algorithm.Securities.TryGetValue(symbol, out security))
@@ -136,6 +127,15 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                 var addedSubscription = false;
                 foreach (var config in universe.GetSubscriptions(security))
                 {
+                    // ask the limiter if we can add another subscription at that resolution
+                    string reason;
+                    if (!_limiter.CanAddSubscription(config.Resolution, out reason))
+                    {
+                        _algorithm.Error(reason);
+                        Log.Trace("UniverseSelection.ApplyUniverseSelection(): Skipping adding subscription: " + config.Symbol.ToString() + ": " + reason);
+                        continue;
+                    }
+
                     // add the new subscriptions to the data feed
                     if (_dataFeed.AddSubscription(universe, security, config, dateTimeUtc, _algorithm.EndDate.ConvertToUtc(_algorithm.TimeZone)))
                     {

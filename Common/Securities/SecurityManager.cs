@@ -319,75 +319,15 @@ namespace QuantConnect.Securities
             decimal leverage,
             bool extendedMarketHours,
             bool isInternalFeed,
-            bool isCustomData,
+            bool isCustomData, 
             bool addToSymbolCache = true,
             bool isFilteredSubscription = true)
         {
-            var sid = symbol.ID;
-
             // add the symbol to our cache
             if (addToSymbolCache) SymbolCache.Set(symbol.Value, symbol);
-
-            //Add the symbol to Data Manager -- generate unified data streams for algorithm events
-            var config = subscriptionManager.Add(factoryType, symbol, resolution, dataTimeZone, exchangeHours.TimeZone, isCustomData, fillDataForward,
-                extendedMarketHours, isInternalFeed, isFilteredSubscription);
-
-            // verify the cash book is in a ready state
-            var quoteCurrency = symbolProperties.QuoteCurrency;
-            if (!securityPortfolioManager.CashBook.ContainsKey(quoteCurrency))
-            {
-                // since we have none it's safe to say the conversion is zero
-                securityPortfolioManager.CashBook.Add(quoteCurrency, 0, 0);
-            }
-            if (sid.SecurityType == SecurityType.Forex)
-            {
-                // decompose the symbol into each currency pair
-                string baseCurrency;
-                Forex.Forex.DecomposeCurrencyPair(symbol.Value, out baseCurrency, out quoteCurrency);
-
-                if (!securityPortfolioManager.CashBook.ContainsKey(baseCurrency))
-                {
-                    // since we have none it's safe to say the conversion is zero
-                    securityPortfolioManager.CashBook.Add(baseCurrency, 0, 0);
-                }
-                if (!securityPortfolioManager.CashBook.ContainsKey(quoteCurrency))
-                {
-                    // since we have none it's safe to say the conversion is zero
-                    securityPortfolioManager.CashBook.Add(quoteCurrency, 0, 0);
-                }
-            }
             
-            var quoteCash = securityPortfolioManager.CashBook[symbolProperties.QuoteCurrency];
-
-            Security security;
-            switch (config.SecurityType)
-            {
-                case SecurityType.Equity:
-                    security = new Equity.Equity(symbol, exchangeHours, quoteCash, symbolProperties);
-                    break;
-
-                case SecurityType.Forex:
-                    security = new Forex.Forex(symbol, exchangeHours, quoteCash, symbolProperties);
-                    break;
-
-                case SecurityType.Cfd:
-                    security = new Cfd.Cfd(symbol, exchangeHours, quoteCash, symbolProperties);
-                    break;
-
-                default:
-                case SecurityType.Base:
-                    security = new Security(symbol, exchangeHours, quoteCash, symbolProperties);
-                    break;
-            }
-
-            // if we're just creating this security and it only has an internal
-            // feed, mark it as non-tradable since the user didn't request this data
-            if (!config.IsInternalFeed)
-            {
-                security.IsTradable = true;
-            }
-
-            security.AddData(config);
+            var quoteCash = ValidateCurrencies(securityPortfolioManager.CashBook, symbol, symbolProperties.QuoteCurrency);
+            var security = CreateSecurity(symbol, exchangeHours, symbolProperties, quoteCash);
 
             // invoke the security initializer
             securityInitializer.Initialize(security);
@@ -425,16 +365,94 @@ namespace QuantConnect.Securities
             var exchangeHours = marketHoursDbEntry.ExchangeHours;
 
             var defaultQuoteCurrency = CashBook.AccountCurrency;
-            if (symbol.ID.SecurityType == SecurityType.Forex) defaultQuoteCurrency = symbol.Value.Substring(3);
+            if (symbol.ID.SecurityType == SecurityType.Forex) defaultQuoteCurrency = Forex.Forex.GetQuoteCurrency(symbol.Value);
             var symbolProperties = symbolPropertiesDatabase.GetSymbolProperties(symbol.ID.Market, symbol.Value, symbol.ID.SecurityType, defaultQuoteCurrency);
 
-            var type = resolution == Resolution.Tick ? typeof(Tick) : typeof(TradeBar);
-            if (symbol.ID.SecurityType == SecurityType.Option && resolution != Resolution.Tick)
+            var type = GetCommonDataType(symbol.ID.SecurityType, resolution);
+            var config = subscriptionManager.Add(type, symbol, resolution, marketHoursDbEntry.DataTimeZone, exchangeHours.TimeZone, isCustomData, fillDataForward, extendedMarketHours, isInternalFeed, true);
+            var security = CreateSecurity(type, securityPortfolioManager, subscriptionManager, exchangeHours, marketHoursDbEntry.DataTimeZone,
+                symbolProperties, securityInitializer, symbol, resolution, fillDataForward, leverage, extendedMarketHours, isInternalFeed, isCustomData,
+                addToSymbolCache);
+            
+            if (config != null)
             {
-                type = typeof(QuoteBar);
+                security.AddData(config);
             }
-            return CreateSecurity(type, securityPortfolioManager, subscriptionManager, exchangeHours, marketHoursDbEntry.DataTimeZone, symbolProperties, securityInitializer, symbol, resolution,
-                fillDataForward, leverage, extendedMarketHours, isInternalFeed, isCustomData, addToSymbolCache);
+
+            return security;
+        }
+
+        /// <summary>
+        /// Gets the common data type for a data subscription for the specified symbol/resolution
+        /// </summary>
+        /// <param name="securityType">The security type of the subscription</param>
+        /// <param name="resolution">The resolution of the subscription</param>
+        /// <returns>The default type for the specified</returns>
+        private static Type GetCommonDataType(SecurityType securityType, Resolution resolution)
+        {
+            if (resolution == Resolution.Tick) return typeof (Tick);
+            if (securityType == SecurityType.Option) return typeof (QuoteBar);
+            return typeof (TradeBar);
+        }
+
+        /// <summary>
+        /// Ensures quote and base cash objects existing in the specified cash book instance.
+        /// </summary>
+        /// <param name="cashBook">The cash book to validate</param>
+        /// <param name="symbol">The symbol of the security being processed</param>
+        /// <param name="quoteCurrency">The quote currency for the security being processed</param>
+        /// <returns>A cash object representing the cashbook's amount of the quote currency. If not already specified,
+        /// then initialized to zero.</returns>
+        private static Cash ValidateCurrencies(CashBook cashBook, Symbol symbol, string quoteCurrency)
+        {
+            // verify the cash book is in a ready state
+            if (!cashBook.ContainsKey(quoteCurrency))
+            {
+                // since we have none it's safe to say the conversion is zero
+                cashBook.Add(quoteCurrency, 0, 0);
+            }
+            if (symbol.ID.SecurityType == SecurityType.Forex)
+            {
+                var baseCurrency = Forex.Forex.GetBaseCurrency(symbol.Value);
+                if (!cashBook.ContainsKey(baseCurrency))
+                {
+                    // since we have none it's safe to say the conversion is zero
+                    cashBook.Add(baseCurrency, 0, 0);
+                }
+                if (!cashBook.ContainsKey(quoteCurrency))
+                {
+                    // since we have none it's safe to say the conversion is zero
+                    cashBook.Add(quoteCurrency, 0, 0);
+                }
+            }
+
+            var quoteCash = cashBook[quoteCurrency];
+            return quoteCash;
+        }
+
+        private static Security CreateSecurity(Symbol symbol, SecurityExchangeHours exchangeHours, SymbolProperties symbolProperties, Cash quoteCash)
+        {
+            Security security;
+            switch (symbol.ID.SecurityType)
+            {
+                case SecurityType.Equity:
+                    security = new Equity.Equity(symbol, exchangeHours, quoteCash, symbolProperties);
+                    break;
+
+                case SecurityType.Forex:
+                    security = new Forex.Forex(symbol, exchangeHours, quoteCash, symbolProperties);
+                    break;
+
+                case SecurityType.Cfd:
+                    security = new Cfd.Cfd(symbol, exchangeHours, quoteCash, symbolProperties);
+                    break;
+
+                default:
+                case SecurityType.Base:
+                    security = new Security(symbol, exchangeHours, quoteCash, symbolProperties);
+                    break;
+            }
+            return security;
         }
     }
 }

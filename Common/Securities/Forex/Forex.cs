@@ -113,5 +113,29 @@ namespace QuantConnect.Securities.Forex
             baseCurrency = currencyPair.Substring(0, 3);
             quoteCurrency = currencyPair.Substring(3);
         }
+
+        /// <summary>
+        /// Gets the base currency from the specified currency pair. Assumes currency identifiers are exactly 3 characters.
+        /// </summary>
+        /// <param name="currencyPair">The currency pair whose base currency we seek.</param>
+        /// <returns>The base currency of the pair</returns>
+        public static string GetBaseCurrency(string currencyPair)
+        {
+            string basec, quotec;
+            DecomposeCurrencyPair(currencyPair, out basec, out quotec);
+            return basec;
+        }
+
+        /// <summary>
+        /// Gets the quote currency from the specified currency pair. Assumes currency identifiers are exactly 3 characters.
+        /// </summary>
+        /// <param name="currencyPair">The currency pair whose quote currency we seek</param>
+        /// <returns>The quote currecy of the pair</returns>
+        public static string GetQuoteCurrency(string currencyPair)
+        {
+            string basec, quotec;
+            DecomposeCurrencyPair(currencyPair, out basec, out quotec);
+            return quotec;
+        }
     }
 }

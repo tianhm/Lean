@@ -40,5 +40,6 @@ using System.Runtime.InteropServices;
 // to not compile break existing user algorithm's, but instead allow them to
 // throw the exception in a backtest and see how to use the new order system.
 [assembly: InternalsVisibleTo("QuantConnect.Brokerages")]
+[assembly: InternalsVisibleTo("QuantConnect.Algorithm")]
 [assembly: InternalsVisibleTo("QuantConnect.Lean.Engine")]
 [assembly: InternalsVisibleTo("QuantConnect.Tests")]

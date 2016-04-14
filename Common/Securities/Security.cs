@@ -628,6 +628,8 @@ namespace QuantConnect.Securities
         {
             if (subscription.Symbol != _symbol) throw new ArgumentException("Symbols must match.", "subscription.Symbol");
             if (!subscription.ExchangeTimeZone.Equals(Exchange.TimeZone)) throw new ArgumentException("ExchangeTimeZones must match.", "subscription.ExchangeTimeZone");
+            // if we have any non-internal subscriptions, mark this as tradable
+            if (!subscription.IsInternalFeed) IsTradable = true;
             SubscriptionsBag.Add(subscription);
         }
     }

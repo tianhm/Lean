@@ -1323,9 +1323,13 @@ namespace QuantConnect.Algorithm
             var symbolProperties = _symbolPropertiesDatabase.GetSymbolProperties(Market.USA, symbol, SecurityType.Base, CashBook.AccountCurrency);
 
             //Add this new generic data as a tradeable security: 
-            var security = SecurityManager.CreateSecurity(typeof(T), Portfolio, SubscriptionManager, marketHoursDbEntry.ExchangeHours, marketHoursDbEntry.DataTimeZone, 
+            Type factoryType = typeof(T);
+            SubscriptionManager subscriptionManager = SubscriptionManager;
+            var config = subscriptionManager.Add(factoryType, symbolObject, resolution, marketHoursDbEntry.DataTimeZone, marketHoursDbEntry.ExchangeHours.TimeZone, true, fillDataForward,
+                true, false, true);
+            var security = SecurityManager.CreateSecurity(factoryType, Portfolio, subscriptionManager, marketHoursDbEntry.ExchangeHours, marketHoursDbEntry.DataTimeZone, 
                 symbolProperties, SecurityInitializer, symbolObject, resolution, fillDataForward, leverage, true, false, true);
-
+            security.AddData(config);
             AddToUserDefinedUniverse(security);
         }
 

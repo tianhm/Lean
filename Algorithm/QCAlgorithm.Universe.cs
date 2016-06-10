@@ -246,12 +246,29 @@ namespace QuantConnect.Algorithm
         /// Creates a new univese and adds it to the algorithm. This is for coarse fundamntal US Equity data and
         /// will be executed on day changes in the NewYork time zone (<see cref="TimeZones.NewYork"/>
         /// </summary>
-        /// <param name="selector">Defines an initial coarse selection</param>
-        public void AddUniverse(Func<IEnumerable<CoarseFundamental>, IEnumerable<Symbol>> selector)
+        /// <param name="coarseSelector">Defines an initial coarse selection</param>
+        public void AddUniverse(Func<IEnumerable<CoarseFundamental>, IEnumerable<Symbol>> coarseSelector)
         {
             var symbol = CoarseFundamental.CreateUniverseSymbol(Market.USA);
-            var config = new SubscriptionDataConfig(typeof(CoarseFundamental), symbol, Resolution.Daily, TimeZones.NewYork, TimeZones.NewYork, false, false, true, isFilteredSubscription: false);
-            AddUniverse(new FuncUniverse(config, UniverseSettings, SecurityInitializer, selectionData => selector(selectionData.OfType<CoarseFundamental>())));
+            AddUniverse(new CoarseFundamentalUniverse(symbol, UniverseSettings, new CoarseFundamentalUniverse.Selector(coarseSelector)));
+        }
+
+        /// <summary>
+        /// Creates a new univese and adds it to the algorithm. This is for coarse fundamntal US Equity data and
+        /// will be executed on day changes in the NewYork time zone (<see cref="TimeZones.NewYork"/>
+        /// </summary>
+        /// <param name="coarseSelector">Defines an initial coarse selection</param>
+        /// <param name="fineSelector">Defines a more detailed selection with access to more data</param>
+        public void AddUniverse(Func<IEnumerable<CoarseFundamental>, IEnumerable<Symbol>> coarseSelector, Func<IEnumerable<FineFundamental>, IEnumerable<Symbol>> fineSelector)
+        {
+            var csymbol = CoarseFundamental.CreateUniverseSymbol(Market.USA);
+            var coarse = new CoarseFundamentalUniverse(csymbol, UniverseSettings, new CoarseFundamentalUniverse.Selector(coarseSelector));
+
+            var fsymbol = FineFundamental.CreateUniverseSymbol(Market.USA);
+            var fine = new FineFundamentalUniverse(fsymbol, UniverseSettings, new FineFundamentalUniverse.Selector(fineSelector));
+
+            // redirect coarse to emit fine subscriptions
+            coarse.ConfigurationRedirect = fine.Configuration;
         }
 
         /// <summary>

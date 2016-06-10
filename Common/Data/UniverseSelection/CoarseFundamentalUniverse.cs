@@ -5,45 +5,6 @@ using QuantConnect.Securities;
 
 namespace QuantConnect.Data.UniverseSelection
 {
-    public static class UniverseExtensions
-    {
-        public static Universe RewriteConfigurationsToPointTo(this Universe first, Universe second)
-        {
-            
-        }
-
-        private class ConfigurationRedirectingUniverse : Universe
-        {
-            private readonly Universe _first;
-            private readonly Universe _second;
-
-            public override UniverseSettings UniverseSettings
-            {
-                get { return _first.UniverseSettings; }
-            }
-
-            public ConfigurationRedirectingUniverse(Universe first, Universe second)
-                : base(first.Configuration, first.SecurityInitializer)
-            {
-                _first = first;
-                _second = second;
-            }
-
-            public override IEnumerable<Symbol> SelectSymbols(DateTime utcTime, BaseDataCollection data)
-            {
-                return _first.SelectSymbols(utcTime, data);
-            }
-
-            protected override IEnumerable<SubscriptionDataConfig> GetSubscriptionConfigurations(Security security)
-            {
-                var target = _second.Configuration;
-                return base.GetSubscriptionConfigurations(security).Select(config =>
-                    new SubscriptionDataConfig(config, target.Type, config.Symbol,)
-                    );
-            }
-        }
-    }
-
     /// <summary>
     /// Represents a universe based on coarse fundamental data
     /// </summary>
@@ -58,6 +19,17 @@ namespace QuantConnect.Data.UniverseSelection
 
         private readonly Selector _selector;
         private readonly UniverseSettings _universeSettings;
+
+        /// <summary>
+        /// When non-null, this universe will emit configuratins uses this as a template (everything except symbol)
+        /// </summary>
+        /// <remarks>
+        /// Non-ideal, decorator pattern would be nice, but we have some type checking, so too risky for now
+        /// </remarks>
+        public SubscriptionDataConfig ConfigurationRedirect
+        {
+            get; set;
+        }
 
         /// <summary>
         /// Gets the settings used for subscriptons added for this universe
@@ -91,6 +63,28 @@ namespace QuantConnect.Data.UniverseSelection
         public override IEnumerable<Symbol> SelectSymbols(DateTime utcTime, BaseDataCollection data)
         {
             return _selector(data.Data.OfType<CoarseFundamental>());
+        }
+
+        /// <summary>
+        /// Gets the subscription configs for the specified security
+        /// </summary>
+        /// <remarks>
+        /// In most cases the default implemention of returning the security's configuration is
+        /// sufficient. It's when we want multiple subscriptions (trade/quote data) that we'll need
+        /// to override this
+        /// </remarks>
+        /// <param name="security">The security to get subscriptions for</param>
+        /// <returns>All subscriptions required by this security</returns>
+        protected override IEnumerable<SubscriptionDataConfig> GetSubscriptionConfigurations(Security security)
+        {
+            if (ConfigurationRedirect != null)
+            {
+                return base.GetSubscriptionConfigurations(security).Select(config =>
+                    new SubscriptionDataConfig(ConfigurationRedirect, symbol: config.Symbol)
+                    );
+            }
+
+            return base.GetSubscriptionConfigurations(security);
         }
 
         private static SubscriptionDataConfig CreateConfiguration(Symbol symbol)

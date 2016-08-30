@@ -18,173 +18,162 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.IO;
-using QuantConnect.Data;
 using QuantConnect.Data.Market;
-using QuantConnect.Logging;
 
 
 namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
 {
-	public class AlgoSeekOptionsReader : IEnumerator<BaseData>
-	{
-		private readonly string _file;
-		private readonly Stream _stream;
-		private readonly StreamReader _streamReader;
-		private readonly DateTime _referenceDate;
 
-	    public bool HasNext { get { return Current != null; } }
+    /// <summary>
+    /// Enumerator for converting AlgoSeek option files into Ticks.
+    /// </summary>
+    public class AlgoSeekOptionsReader : IEnumerator<Tick>
+    {
+        private DateTime _date;
+        private Stream _stream;
+        private StreamReader _streamReader;
 
-	    object IEnumerator.Current { get { return Current; } }
+        /// <summary>
+        /// Enumerate through the lines of the algoseek files.
+        /// </summary>
+        /// <param name="file">BZ File for algoseek</param>
+        /// <param name="date">Reference date of the folder</param>
+        public AlgoSeekOptionsReader(string file, DateTime date)
+        {
+            _date = date;
+            var streamProvider = StreamProvider.ForExtension(Path.GetExtension(file));
+            _stream = streamProvider.Open(file).First();
+            _streamReader = new StreamReader(_stream);
 
-	    public BaseData Current { get; private set; }
+            //Prime the data pump, set the current.
+            Current = null;
+            MoveNext();
+        }
 
-	    public long Count { get; private set; }
+        /// <summary>
+        /// Parse the next line of the algoseek option file.
+        /// </summary>
+        /// <returns></returns>
+        public bool MoveNext()
+        {
+            string line;
+            Tick tick = null;
+            while ((line = _streamReader.ReadLine()) != null && tick == null)
+            {
+                // If line is invalid continue looping to find next valid line.
+                tick = Parse(line);
+            }
+            Current = tick;
+            return Current != null;
+        }
 
-		public long InvalidLines { get; private set; }
+        /// <summary>
+        /// Current top of the tick file.
+        /// </summary>
+        public Tick Current
+        {
+            get; private set; 
+            
+        }
 
-		private bool IsEOF { get { return _streamReader.Peek() == -1; } }
+        object IEnumerator.Current
+        {
+            get { return Current; }
+        }
 
-		public AlgoSeekOptionsReader(string file, DateTime referenceDate)
-		{
-		    Current = null;
-		    _file = file;
-			_referenceDate = referenceDate;
+        /// <summary>
+        /// Reset the enumerator for the AlgoSeekOptionReader
+        /// </summary>
+        public void Reset()
+        {
+            throw new NotImplementedException("Reset not implemented for AlgoSeekOptionsReader.");
+        }
 
-			var streamProvider = StreamProvider.ForExtension(Path.GetExtension(file));
-			_stream = streamProvider.Open(file).First();
-			_streamReader = new StreamReader(_stream);
+        /// <summary>
+        /// Dispose of the underlying AlgoSeekOptionsReader
+        /// </summary>
+        public void Dispose()
+        {
+            _stream.Close();
+            _stream.Dispose();
+            _streamReader.Close();
+            _streamReader.Dispose();
+        }
+        
+        /// <summary>
+        /// Parse a string line into a option tick.
+        /// </summary>
+        /// <param name="line"></param>
+        /// <returns></returns>
+        private Tick Parse(string line)
+        {
+            // filter out bad lines as fast as possible
+            EventType eventType;
+            if (!EventType.TryParse(line, out eventType))
+            {
+                return null;
+            }
 
-			MoveNext();
-		}
+            // parse csv check column count
+            const int columns = 11;
+            var csv = line.ToCsv(columns);
+            if (csv.Count < columns)
+            {
+                return null;
+            }
 
-		public void Dispose()
-		{
-			_stream.Close();
-			_stream.Dispose();
-			_streamReader.Close();
-			_streamReader.Dispose();
-		}
+            // ignoring time zones completely -- this is all in the 'data-time-zone'
+            var timeString = csv[0];
+            var hours = timeString.Substring(0, 2).ToInt32();
+            var minutes = timeString.Substring(3, 2).ToInt32();
+            var seconds = timeString.Substring(6, 2).ToInt32();
+            var millis = timeString.Substring(9, 3).ToInt32();
+            var time = _date.Add(new TimeSpan(0, hours, minutes, seconds, millis));
 
-		public BaseData Take()
-		{
-			var thisLine = Current;
-			MoveNext();
-			return thisLine;
-		}
+            // detail: PUT at 30.0000 on 2014-01-18
+            var underlying = csv[4];
 
-		public bool MoveNext()
-		{
-			Current = NextValidEntry();
-			return Current != null;
-		}
+            var optionRight = csv[5][0] == 'P' ? OptionRight.Put : OptionRight.Call;
+            var expiry = DateTime.ParseExact(csv[6], "yyyyMMdd", null);
+            var strike = csv[7].ToDecimal() / 10000m;
+            var optionStyle = OptionStyle.American; // couldn't see this specified in the file, maybe need a reference file
+            var sid = SecurityIdentifier.GenerateOption(expiry, underlying, Market.USA, strike, optionRight, optionStyle);
+            var symbol = new Symbol(sid, underlying);
 
-	    public void Reset()
-	    {
-	        throw new NotImplementedException("Reset not implemented for AlgoSeekOptionsReader.");
-	    }
+            var price = csv[9].ToDecimal() / 10000m;
+            var quantity = csv[8].ToInt32();
 
-		private BaseData NextValidEntry()
-		{
-			BaseData nextValidEntry = null;
-			while (nextValidEntry == null && !IsEOF)
-			{
-				InvalidLines++;
-				nextValidEntry = ParseNextLine();
-			}
-			return nextValidEntry;
-		}
+            var tick = new Tick
+            {
+                Symbol = symbol,
+                Time = time,
+                TickType = eventType.TickType,
+                Exchange = csv[10],
+                Value = price
+            };
+            if (eventType.TickType == TickType.Quote)
+            {
+                if (eventType.IsAsk)
+                {
+                    tick.AskPrice = price;
+                    tick.AskSize = quantity;
+                }
+                else
+                {
+                    tick.BidPrice = price;
+                    tick.BidSize = quantity;
+                }
+            }
+            else
+            {
+                tick.Quantity = quantity;
+            }
 
-		private BaseData ParseNextLine()
-		{
-			if (IsEOF)
-			{
-				return null;
-			}
+            return tick;
+        }
+    }
 
-			Tick tick = null;
-			try
-			{
-				var line = _streamReader.ReadLine();
-				tick = ParseIntoTick(line);
-			}
-			catch (Exception err)
-			{
-				Log.Error(err);
-			}
-
-			return tick;
-		}
-
-		private Tick ParseIntoTick(string line)
-		{
-			// filter out bad lines as fast as possible
-			EventType eventType;
-			if (!EventType.TryParse(line, out eventType))
-			{
-				return null;
-			}
-
-			// parse csv check column count
-			const int columns = 11;
-			var csv = line.ToCsv(columns);
-			if (csv.Count < columns) 
-			{
-				return null;
-			}
-			Count++;
-
-			// ignoring time zones completely -- this is all in the 'data-time-zone'
-			var timeString = csv[0];
-			var hours = timeString.Substring(0, 2).ToInt32();
-			var minutes = timeString.Substring(3, 2).ToInt32();
-			var seconds = timeString.Substring(6, 2).ToInt32();
-			var millis = timeString.Substring(9, 3).ToInt32();
-			var time = _referenceDate.Add(new TimeSpan(0, hours, minutes, seconds, millis));
-
-			// detail: PUT at 30.0000 on 2014-01-18
-			var underlying = csv[4];
-
-			var optionRight = csv[5][0] == 'P' ? OptionRight.Put : OptionRight.Call;
-			var expiry = DateTime.ParseExact(csv[6], "yyyyMMdd", null);
-			var strike = csv[7].ToDecimal()/10000m;
-			var optionStyle = OptionStyle.American; // couldn't see this specified in the file, maybe need a reference file
-			var sid = SecurityIdentifier.GenerateOption(expiry, underlying, Market.USA, strike, optionRight, optionStyle);
-			var symbol = new Symbol(sid, underlying);
-
-			var price = csv[9].ToDecimal() / 10000m;
-			var quantity = csv[8].ToInt32();
-
-			var tick = new Tick
-			{
-				Symbol = symbol,
-				Time = time,
-				TickType = eventType.TickType,
-				Exchange = csv[10],
-				Value = price
-			};
-			if (eventType.TickType == TickType.Quote)
-			{
-				if (eventType.IsAsk)
-				{
-					tick.AskPrice = price;
-					tick.AskSize = quantity;
-				}
-				else
-				{
-					tick.BidPrice = price;
-					tick.BidSize = quantity;
-				}
-			}
-			else
-			{
-				tick.Quantity = quantity;
-			}
-
-			return tick;
-		}
-	}
-
-	class EventType
+    class EventType
 	{
 		public static readonly EventType Trade = new EventType(false, TickType.Trade);
 		public static readonly EventType Bid = new EventType(false, TickType.Quote);
@@ -204,16 +193,16 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
 			switch (line[13])
 			{
 			case 'T':
-				eventType = EventType.Trade;
+				eventType = Trade;
 				break;
 			case 'F':
 				switch (line[15])
 				{
 				case 'B':
-					eventType = EventType.Bid;
+					eventType = Bid;
 					break;
 				case 'O':
-					eventType = EventType.Ask;
+					eventType = Ask;
 					break;
 				default:
 					eventType = null;

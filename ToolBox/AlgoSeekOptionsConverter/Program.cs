@@ -20,41 +20,40 @@ using QuantConnect.Configuration;
 
 namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
 {
+    /// <summary>
+    /// AlgoSeek Options Converter: Convert raw OPRA channel files into QuantConnect Options Data Format.
+    /// </summary>
     public class Program
     {
-      public static void Main()
+        public static void Main()
         {
-			Environment.SetEnvironmentVariable("MONO_MANAGED_WATCHER", "disabled");
+            // There are practical file limits we need to override for this to work. 
+            // By default programs are only allowed 1024 files open; for options parsing we need 100k
+            Environment.SetEnvironmentVariable("MONO_MANAGED_WATCHER", "disabled");
 
-			var sourceDirectory = "/Users/jona8276/Projects/QuantConnect/TestData/RawGoog/20151224";
-			var destinationDirectory = "/Users/jona8276/Projects/QuantConnect/TestData";
+            //Root directory for the source data:
+            var sourceDirectory = Config.Get("options-source-directory");
 
-//            var sourceDirectory = Config.Get("sourceDirectory");
-//            var destinationDirectory = Config.Get("destinationDirectory");
+            //Root data output directory
+            var destinationDirectory = Config.Get("data-directory");
 
-//            var logFilePath = Config.Get("logFilePath");
-            var logFilePath = "AlgoSeekOptionsConverter";
-            Log.LogHandler = new CompositeLogHandler(new ILogHandler[]
-            {
-                new ConsoleLogHandler(),
-                new FileLogHandler(logFilePath)
-            });
+            // Date for the option bz files.
+            var referenceDate = DateTime.Parse(Config.Get("options-reference-date"));
 
-//			var flushInterval = long.Parse(Config.Get("flushInterval"));
+            // How many lines should we process before flushing the data to disk.
             var flushInterval = 1000000L;
-            var converter = new AlgoSeekOptionsConverter();
 
-			var conversionTimer = Stopwatch.StartNew();
-			converter.ConvertToFineResolution(sourceDirectory, destinationDirectory, flushInterval);
-			conversionTimer.Stop();
 
-			Log.Trace(string.Format("Conversion finished in time: {0}", conversionTimer.Elapsed));
+            // Convert the date:
+            var timer = Stopwatch.StartNew();
+            var converter = new AlgoSeekOptionsConverter(referenceDate, sourceDirectory, destinationDirectory, flushInterval);
+            converter.Convert();
+            Log.Trace(string.Format("AlgoSeekOptionConverter.Main(): {0} Conversion finished in time: {1}", referenceDate, timer.Elapsed));
 
-//            var compressionTimer = Stopwatch.StartNew();
-//            converter.Compress(destinationDirectory, 1);
-//            compressionTimer.Stop();
-//
-//            Log.Trace(string.Format("Compression finished in time: {0}", compressionTimer.Elapsed));
+            //Compress the date's separate CSV's into a single LEAN .zip file.
+            timer.Restart();
+            converter.Compress(destinationDirectory, 1);
+            Log.Trace(string.Format("AlgoSeekOptionConverter.Main(): {0} Compression finished in time: {1}", referenceDate, timer.Elapsed));
         }
     }
 }

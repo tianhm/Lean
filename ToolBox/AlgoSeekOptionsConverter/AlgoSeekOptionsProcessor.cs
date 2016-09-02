@@ -14,158 +14,103 @@
 */
 
 using System;
-using System.Linq;
 using QuantConnect.Data;
-using QuantConnect.Util;
 using System.Collections.Generic;
 using QuantConnect.Data.Consolidators;
-using System.IO;
+using QuantConnect.Data.Market;
 
 namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
 {
+    /// <summary>
+    /// Processor for caching and consolidating ticks; 
+    /// then flushing the ticks in memory to disk when triggered.
+    /// </summary>
     public class AlgoSeekOptionsProcessor
     {
-        private readonly Resolution[] _resolutions;
-        private readonly TickType _tickType;
-        private readonly Dictionary<Symbol, TickRepository> _tickRepositoriesBySymbol;
-        private readonly string _destinationDirectory;
-        private readonly Func<BaseData, bool> _filter = x => true;
+        private Symbol _symbol;
+        private TickType _tickType;
+        private Resolution _resolution;
+        private Queue<BaseData> _queue; 
+        private string _destinationDirectory;
+        private IDataConsolidator _consolidator;
 
-        public AlgoSeekOptionsProcessor(TickType tickType, Resolution[] resolutions, string destinationDirectory, Func<BaseData, bool> filter = null)
+        /// <summary>
+        /// Create a new AlgoSeekOptionsProcessor for enquing consolidated bars and flushing them to disk
+        /// </summary>
+        /// <param name="symbol">Symbol for the processor</param>
+        /// <param name="tickType">TradeBar or QuoteBar to generate</param>
+        /// <param name="resolution">Resolution to consolidate</param>
+        /// <param name="destinationDirectory">Data directory for LEAN</param>
+        public AlgoSeekOptionsProcessor(Symbol symbol, TickType tickType, Resolution resolution, string destinationDirectory)
         {
+            _symbol = symbol;
             _tickType = tickType;
-            _resolutions = resolutions;
-            _tickRepositoriesBySymbol = new Dictionary<Symbol, TickRepository>();
+            _resolution = resolution;
+            _queue = new Queue<BaseData>();
             _destinationDirectory = destinationDirectory;
-            _filter = filter ?? _filter;
+
+            // Setup the consolidator for the requested resolution
+            _consolidator = new PassthroughConsolidator();
+            if (resolution != Resolution.Tick)
+            {
+                _consolidator = new TickQuoteBarConsolidator(resolution.ToTimeSpan());
+            }
+            
+            // On consolidating the bars put the bar into a queue in memory to be written to disk later.
+            _consolidator.DataConsolidated += (sender, consolidated) =>
+            {
+                _queue.Enqueue(consolidated);
+            };
         }
 
-        public void Process(BaseData newTick)
+        /// <summary>
+        /// Process the tick; add to the con
+        /// </summary>
+        /// <param name="data"></param>
+        public void Process(BaseData data)
         {
-            if (!_filter(newTick))
+            if (((Tick)data).TickType != _tickType)
             {
                 return;
             }
 
-            if (!_tickRepositoriesBySymbol.ContainsKey(newTick.Symbol))
-            {
-                _tickRepositoriesBySymbol[newTick.Symbol] = new TickRepository(_tickType, _resolutions);
-            }
-
-            _tickRepositoriesBySymbol[newTick.Symbol].Add(newTick);
-        }
-
-        public void FlushToDisk(DateTime frontierTime, bool finalFlush = false)
-        {
-            foreach (var repository in _tickRepositoriesBySymbol)
-            {
-                foreach (var resolution in _resolutions)
-                {
-                    var data = repository.Value.GetConsolidatedFor(resolution, frontierTime, finalFlush);
-                    using (var writer = LeanOptionsWriter.CreateNew(_destinationDirectory, repository.Key, frontierTime, resolution, _tickType))
-                    {
-                        foreach (var entry in data)
-                        {
-                            writer.WriteEntry(entry);
-                        }
-                    }
-                }
-            }
-        }
-
-        public string GetStats()
-        {
-            var symbolCount = _tickRepositoriesBySymbol.Count;
-
-            var totalEntries = _tickRepositoriesBySymbol.Values.Sum(repo => repo.Size);
-
-            var avgSize = totalEntries / symbolCount;
-
-            return string.Format("{0} symbols with average entries {1}", symbolCount, avgSize);
+            _consolidator.Update(data);
         }
 
         /// <summary>
-        /// Performs application-defined tasks associated with freeing, releasing, or resetting unmanaged resources.
+        /// Write the in memory queues to the disk.
         /// </summary>
-        public void Dispose()
+        /// <param name="frontierTime">Current foremost tick time</param>
+        /// <param name="finalFlush">Indicates is this is the final push to disk at the end of the data</param>
+        public void FlushBuffer(DateTime frontierTime, bool finalFlush = false)
         {
-        }
+            //Force the consolidation if time has past the bar
+            _consolidator.Scan(frontierTime);
 
+            // If this is the final packet dump it to the queue
+            if (finalFlush && _consolidator.WorkingData != null)
+            {
+                _queue.Enqueue(_consolidator.WorkingData);
+            }
+
+            // Purge the queue to disk.
+            using (var writer = new LeanOptionsWriter(_destinationDirectory, _symbol, frontierTime, _resolution, _tickType))
+            {
+                while (_queue.Count > 0)
+                {
+                    writer.WriteEntry(_queue.Dequeue());
+                }
+            }
+        }
     }
 
     /// <summary>
-    /// Holds consolidators and consolidated data for multiple resolutions of a single symbol.
+    /// This is a shim for handling Tick resolution data in TickRepository
+    /// Ordinary TickConsolidators presents Consolidated data as type TradeBars.
+    /// However, LeanData.GenerateLine expects Tick resolution data to be of type Tick.
+    /// This class lets tick data pass through without changing object type,
+    /// which simplifies the logic in TickRepository.
     /// </summary>
-    internal class TickRepository
-    {
-        private readonly Dictionary<Resolution, Queue<BaseData>> _queues = new Dictionary<Resolution, Queue<BaseData>>();
-        private readonly Dictionary<Resolution, IDataConsolidator> _consolidators = new Dictionary<Resolution, IDataConsolidator>();
-
-        public int Size { get; private set; }
-
-        public TickRepository(TickType tickType, Resolution[] resolutions)
-        {
-            resolutions.ForEach(res => InitializeResolution(res, tickType));
-        }
-
-        public void Add(BaseData newTick)
-        {
-            _consolidators.Values.ForEach(consolidator => consolidator.Update(newTick));
-            Size++;
-        }
-
-        public IEnumerable<BaseData> GetConsolidatedFor(Resolution resolution, DateTime frontierTime, bool forceFlush = false)
-        {
-            var consolidator = _consolidators[resolution];
-            consolidator.Scan(frontierTime);
-            var queue = _queues[resolution];
-
-            if (forceFlush && consolidator.WorkingData != null)
-            {
-                queue.Enqueue(consolidator.WorkingData);
-            }
-
-            while (queue.Count > 0)
-            {
-                yield return queue.Dequeue();
-            }
-        }
-
-        private void InitializeResolution(Resolution resolution, TickType tickType)
-        {
-            var queue = new Queue<BaseData>();
-
-            var consolidator = CreateConsolidator(resolution, tickType);
-            consolidator.DataConsolidated += (sender, consolidated) => queue.Enqueue(consolidated);
-
-            _queues[resolution] = queue;
-            _consolidators[resolution] = consolidator;
-        }
-
-        private static IDataConsolidator CreateConsolidator(Resolution resolution, TickType tickType)
-        {
-            if (resolution == Resolution.Tick)
-            {
-                return new PassthroughConsolidator();
-            }
-
-            switch (tickType)
-            {
-                case TickType.Trade:
-                    return new TickConsolidator(resolution.ToTimeSpan());
-                case TickType.Quote:
-                    return new TickQuoteBarConsolidator(resolution.ToTimeSpan());
-            }
-
-            throw new NotImplementedException("Consolidator creation is not defined for Tick type " + tickType);
-        }
-    }
-
-    // This is a shim for handling Tick resolution data in TickRepository
-    // Ordinary TickConsolidators presents Consolidated data as type TradeBars.
-    // However, LeanData.GenerateLine expects Tick resolution data to be of type Tick.
-    // This class lets tick data pass through without changing object type,
-    // which simplifies the logic in TickRepository.
     internal class PassthroughConsolidator : IDataConsolidator
     {
         public BaseData Consolidated { get; private set; }
@@ -198,57 +143,6 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
 
         public void Scan(DateTime currentLocalTime)
         {
-        }
-    }
-
-    // Ideally this should be merged into with LeanDataWriter.
-    internal class LeanOptionsWriter : IDisposable
-    {
-        private readonly StreamWriter _streamWriter;
-        private readonly Resolution _resolution;
-
-        public LeanOptionsWriter(string path, Resolution resolution)
-        {
-            _streamWriter = new StreamWriter(path);
-            _resolution = resolution;
-        }
-
-        public static LeanOptionsWriter CreateNew(string dataDirectory, Symbol symbol, DateTime date, Resolution resolution, TickType tickType)
-        {
-            var entry = LeanData.GenerateZipEntryName(symbol, date, resolution, tickType);
-            var relativePath = LeanData.GenerateRelativeZipFilePath(symbol, date, resolution, tickType).Replace(".zip", string.Empty);
-            var path = Path.Combine(Path.Combine(dataDirectory, relativePath), entry);
-            var directory = new FileInfo(path).Directory.FullName;
-            Directory.CreateDirectory(directory);
-
-            return new LeanOptionsWriter(path, resolution);
-        }
-
-        public void WriteEntry(BaseData data)
-        {
-            var line = LeanData.GenerateLine(data, data.Symbol.ID.SecurityType, _resolution);
-            _streamWriter.WriteLine(line);
-        }
-
-        public void Flush()
-        {
-            _streamWriter.Flush();
-        }
-
-        public void Dispose()
-        {
-            _streamWriter.Dispose();
-        }
-    }
-
-    internal static partial class Extensions
-    {
-        public static void ForEach<T>(this IEnumerable<T> enumerable, Action<T> action)
-        {
-            foreach (var entry in enumerable)
-            {
-                action(entry);
-            }
         }
     }
 }

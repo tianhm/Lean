@@ -14,6 +14,7 @@
 */
 using System;
 using System.IO;
+using System.Linq;
 using QuantConnect.Data;
 using QuantConnect.Util;
 
@@ -26,12 +27,27 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
     {
         private Resolution _resolution;
         private StreamWriter _streamWriter;
+        private string[] _windowsRestrictedNames =
+        {
+            "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5",
+            "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5",
+            "LPT6", "LPT7", "LPT8", "LPT9"
+        };
         
         /// <summary>
         /// Create a new instance of a LeanOptionDataWriter.
         /// </summary>
         public LeanOptionsWriter(string dataDirectory, Symbol symbol, DateTime date, Resolution resolution, TickType tickType)
         {
+            if (OS.IsWindows)
+            {
+                if (_windowsRestrictedNames.Contains(symbol.Value))
+                {
+                    symbol = Symbol.CreateOption("_" + symbol.Value, symbol.ID.Market, symbol.ID.OptionStyle,
+                        symbol.ID.OptionRight, symbol.ID.StrikePrice, symbol.ID.Date);
+                }
+            }
+
             //Create a folder to store all the csv's in temporarily until zipped.
             var entry = LeanData.GenerateZipEntryName(symbol, date, resolution, tickType);
             var relativePath = LeanData.GenerateRelativeZipFilePath(symbol, date, resolution, tickType).Replace(".zip", string.Empty);

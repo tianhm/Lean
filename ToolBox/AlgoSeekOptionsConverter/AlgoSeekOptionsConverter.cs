@@ -42,7 +42,7 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
         /// <param name="source">Source directory of the .bz algoseek files</param>
         /// <param name="destination">Data directory of LEAN</param>
         /// <param name="flushInterval">How many lines should we hold in memory before flushing.</param>
-        public AlgoSeekOptionsConverter(DateTime referenceDate, string source, string destination, long flushInterval = 1000000)
+        public AlgoSeekOptionsConverter(DateTime referenceDate, string source, string destination, long flushInterval = 100000000)
         {
             _source = source;
             _referenceDate = referenceDate;
@@ -59,12 +59,14 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
 
             //Get the list of all the files, then for each file open a separate streamer.
             var files = Directory.EnumerateFiles(_source).OrderByDescending(x => new FileInfo(x).Length);
+            Log.Trace("AlgoSeekOptionsConverter.Convert(): Loading {0} AlgoSeekOptionsReader for {1}...", files.Count(), _referenceDate);
             var optionsReaders = files.Select(file => new AlgoSeekOptionsReader(file, _referenceDate)).ToList();
 
             //Initialize parameters
             var totalLinesProcessed = 0L;
             var frontier = DateTime.MinValue;
             var updatedSymbols = new HashSet<Symbol>();
+            var estimatedEndTime = _referenceDate.AddHours(16);
             var synchronizer = new SynchronizingEnumerator(optionsReaders);
             var processors = new Dictionary<Symbol, List<AlgoSeekOptionsProcessor>>();
 
@@ -74,6 +76,8 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
                 synchronizer.MoveNext();
             }
 
+            
+            Log.Trace("AlgoSeekOptionsConverter.Convert(): Synchronizing and processing ticks...", files.Count(), _referenceDate);
             do
             {
                 var tick = synchronizer.Current;
@@ -102,9 +106,15 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
 
                 //Due to limits on the files that can be open at a time we need to constantly flush this to disk.
                 totalLinesProcessed++;
+                if (totalLinesProcessed % 1000000m == 0)
+                {
+                    var completed = Math.Round(1 - (estimatedEndTime - frontier).TotalMinutes / TimeSpan.FromHours(6.5).TotalMinutes, 3);
+                    Log.Trace("AlgoSeekOptionsConverter.Convert(): Processed {0,3}M ticks; Memory in use: {1} MB; Frontier Time: {2}; Completed: {3:P3}", Math.Round(totalLinesProcessed / 1000000m, 2), Process.GetCurrentProcess().WorkingSet64 / (1024 * 1024), frontier.ToString("u"), completed);
+                }
+
                 if (totalLinesProcessed % _flushInterval == 0)
                 {
-                    Log.Trace("AlgoSeekOptionsConverter.Convert(): Processed {0,3}M lines; Memory in use: {1} MB", totalLinesProcessed / _flushInterval, Process.GetCurrentProcess().WorkingSet64 / (1024 * 1024));
+                    Log.Trace("AlgoSeekOptionsConverter.Convert(): Writing memory buffer of {0} symbols to disk...", updatedSymbols.Count);
                     foreach (var updated in updatedSymbols)
                     {
                         processors[updated].ForEach(x => x.FlushBuffer(frontier));

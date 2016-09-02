@@ -15,85 +15,133 @@
 
 using System;
 using System.IO;
-using QuantConnect.Logging;
-using QuantConnect.Data.Market;
 using System.Linq;
+using QuantConnect.Logging;
 using System.Diagnostics;
 using System.Threading.Tasks;
 using System.Collections.Generic;
+using QuantConnect.Lean.Engine.DataFeeds.Enumerators;
 
 namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
 {
+    /// <summary>
+    /// Process a directory of algoseek option files into separate resolutions.
+    /// </summary>
     public class AlgoSeekOptionsConverter
     {
-        public static readonly Resolution[] FineResolutions = { Resolution.Tick, Resolution.Second, Resolution.Minute };
-        public static readonly Resolution[] CoarseResolutions = { Resolution.Hour, Resolution.Daily };
+        private string _source;
+        private string _destination;
+        private long _flushInterval;
+        private DateTime _referenceDate;
+        private Resolution[] _resolutions;
 
-        public long CurrentMemoryUsage
+        /// <summary>
+        /// Create a new instance of the AlgoSeekOptions Converter. Parse a single input directory into an output.
+        /// </summary>
+        /// <param name="referenceDate">Datetime to be added to the milliseconds since midnight. Algoseek data is stored in channel files (XX.bz2) and in a source directory</param>
+        /// <param name="source">Source directory of the .bz algoseek files</param>
+        /// <param name="destination">Data directory of LEAN</param>
+        /// <param name="flushInterval">How many lines should we hold in memory before flushing.</param>
+        public AlgoSeekOptionsConverter(DateTime referenceDate, string source, string destination, long flushInterval = 1000000)
         {
-            get { return Process.GetCurrentProcess().WorkingSet64 / (1024 * 1024); }
+            _source = source;
+            _referenceDate = referenceDate;
+            _destination = destination;
+            _flushInterval = flushInterval;
         }
-
-        public void ConvertToFineResolution(string sourceDirectory, string destinationDirectory, long flushInterval)
+        
+        /// <summary>
+        /// Give the reference date and source directory, convert the algoseek options data into n-resolutions LEAN format.
+        /// </summary>
+        public void Convert(params Resolution[] resolutions)
         {
-            var files = Directory.EnumerateFiles(sourceDirectory).OrderByDescending(x => new FileInfo(x).Length);
-            var referenceDate = DateTime.ParseExact(new DirectoryInfo(sourceDirectory).Name, DateFormat.EightCharacter, null);
-            var optionsReaders = files.Select(file => new AlgoSeekOptionsReader(file, referenceDate)).ToList();
+            _resolutions = resolutions;
 
-            var quoteProcessor = new AlgoSeekOptionsProcessor(TickType.Quote, FineResolutions, destinationDirectory, x => ((Tick) x).TickType == TickType.Quote);
-            var tradeProcessor = new AlgoSeekOptionsProcessor(TickType.Trade, FineResolutions, destinationDirectory, x => ((Tick) x).TickType == TickType.Trade);
+            //Get the list of all the files, then for each file open a separate streamer.
+            var files = Directory.EnumerateFiles(_source).OrderByDescending(x => new FileInfo(x).Length);
+            var optionsReaders = files.Select(file => new AlgoSeekOptionsReader(file, _referenceDate)).ToList();
 
+            //Initialize parameters
             var totalLinesProcessed = 0L;
-            var frontierTime = referenceDate;
-            while (optionsReaders.Any(reader => reader.HasNext))
+            var frontier = DateTime.MinValue;
+            var updatedSymbols = new HashSet<Symbol>();
+            var synchronizer = new SynchronizingEnumerator(optionsReaders);
+            var processors = new Dictionary<Symbol, List<AlgoSeekOptionsProcessor>>();
+
+            // Prime the synchronizer if required:
+            if (synchronizer.Current == null)
             {
-                var activeReaders = optionsReaders.Where(reader => reader.HasNext);
-                var nextTick = activeReaders.EarliestTick().Take();
-                frontierTime = nextTick.Time;
-
-                quoteProcessor.Process(nextTick);
-                tradeProcessor.Process(nextTick);
-
-                totalLinesProcessed++;
-                if (totalLinesProcessed % flushInterval == 0)
-                {
-                    Log.Trace("Processed {0,3}M lines; Memory in use: {1} MB", totalLinesProcessed / flushInterval, CurrentMemoryUsage);
-
-                    quoteProcessor.FlushToDisk(frontierTime);
-                    tradeProcessor.FlushToDisk(frontierTime);
-                }
+                synchronizer.MoveNext();
             }
 
-            quoteProcessor.FlushToDisk(frontierTime, true);
-            tradeProcessor.FlushToDisk(frontierTime, true);
+            do
+            {
+                var tick = synchronizer.Current;
+                frontier = tick.Time;
+                updatedSymbols.Add(tick.Symbol);
 
-            Log.Trace("Finished processing directory: " + sourceDirectory);
-            Log.Trace("Number of Quotes: " + quoteProcessor.GetStats());
-            Log.Trace("Number of Trades: " + tradeProcessor.GetStats());
+                //Add or create the consolidator-flush mechanism for symbol:
+                List<AlgoSeekOptionsProcessor> symbolProcessors;
+                if (!processors.TryGetValue(tick.Symbol, out symbolProcessors))
+                {
+                    symbolProcessors = new List<AlgoSeekOptionsProcessor>(resolutions.Length);
+                    foreach (var resolution in resolutions)
+                    {
+                        symbolProcessors.Add(new AlgoSeekOptionsProcessor(tick.Symbol, TickType.Quote, resolution, _destination));
+                        symbolProcessors.Add(new AlgoSeekOptionsProcessor(tick.Symbol, TickType.Trade, resolution, _destination));
+                    }
+                    processors[tick.Symbol] = symbolProcessors;
+                }
+
+                // Pass current tick into processor:
+                symbolProcessors = processors[tick.Symbol];
+                foreach (var unit in symbolProcessors)
+                {
+                    unit.Process(tick);
+                }
+
+                //Due to limits on the files that can be open at a time we need to constantly flush this to disk.
+                totalLinesProcessed++;
+                if (totalLinesProcessed % _flushInterval == 0)
+                {
+                    Log.Trace("AlgoSeekOptionsConverter.Convert(): Processed {0,3}M lines; Memory in use: {1} MB", totalLinesProcessed / _flushInterval, Process.GetCurrentProcess().WorkingSet64 / (1024 * 1024));
+                    foreach (var updated in updatedSymbols)
+                    {
+                        processors[updated].ForEach(x => x.FlushBuffer(frontier));
+                    }
+                    updatedSymbols.Clear();
+                }
+            }
+            while (synchronizer.MoveNext());
+
+            Log.Trace("AlgoSeekOptionsConverter.Convert(): Performing final flush to disk... ");
+            foreach (var symbol in processors.Keys)
+            {
+                processors[symbol].ForEach(x => x.FlushBuffer(DateTime.MaxValue, true));
+            }
+
+            Log.Trace("AlgoSeekOptionsConverter.Convert(): Finished processing directory: " + _source);
         }
 
-        public void Compress(string dataDirectory, int parallelism)
+        /// <summary>
+        /// Point to a directory of option csv files and compress into a single option.zip for the day.
+        /// </summary>
+        /// <param name="dataDirectory">Directory with the option csv files</param>
+        /// <param name="parallelism">Number of threads to use in the compression, defaults to 1</param>
+        public void Compress(string dataDirectory, int parallelism = 1)
         {
-            Log.Trace("Begin compressing csv files");
+            Log.Trace("AlgoSeekOptionsConverter.Compress(): Begin compressing csv files");
 
             var root = Path.Combine(dataDirectory, "option", "usa");
             var fine =
-                from res in FineResolutions
+                from res in _resolutions
                 let path = Path.Combine(root, res.ToLower())
                 from sym in Directory.EnumerateDirectories(path)
                 from dir in Directory.EnumerateDirectories(sym)
                 select new DirectoryInfo(dir).FullName;
 
-            var coarse =
-                from res in CoarseResolutions
-                let path = Path.Combine(root, res.ToLower())
-                from dir in Directory.EnumerateDirectories(path)
-                select new DirectoryInfo(dir).FullName;
-
-            var all = fine.Union(coarse);
-
             var options = new ParallelOptions {MaxDegreeOfParallelism = parallelism};
-            Parallel.ForEach(all, options, dir =>
+            Parallel.ForEach(fine, options, dir =>
             {
                 try
                 {
@@ -107,57 +155,6 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
                     Log.Error(err, "Zipping " + dir);
                 }
             });
-        }
-
-        public void ExtractSymbol(string symbol, string sourceDirectory, string destinationDirectory)
-        {
-            Directory.CreateDirectory(destinationDirectory);
-            var inputFiles = Directory.EnumerateFiles(sourceDirectory).OrderByDescending(x => new FileInfo(x).Length);
-            Parallel.ForEach(inputFiles, inputFile =>
-            {
-                var fileType = Path.GetExtension(inputFile);
-                var streamProvider = StreamProvider.ForExtension(fileType);
-
-                var inputStream = streamProvider.Open(inputFile).First();
-                var inputReader = new StreamReader(inputStream);
-
-                var outputFile = Path.Combine(destinationDirectory, Path.GetFileNameWithoutExtension(inputFile));
-                var outputWriter = new StreamWriter(outputFile);
-
-                var count = 0L;
-                var logInterval = 1000000L;
-                while (inputReader.Peek() != -1)
-                {
-                    var line = inputReader.ReadLine();
-                    count++;
-                    if (count % logInterval == 0)
-                    {
-                        Log.Trace("({0}): Parsed {1,3}M lines", inputFile, count / logInterval);
-                    }
-                    const int columns = 11;
-                    var csv = line.ToCsv(columns);
-                    if (csv.Count < columns)
-                    {
-                        continue;
-                    }
-                    var underlying = csv[4];
-                    if (underlying.ToLower().StartsWith(symbol))
-                    {
-                        outputWriter.WriteLine(line);
-                    }
-                }
-                inputReader.Dispose();
-                inputStream.Dispose();
-                outputWriter.Dispose();
-            });
-        }
-    }
-
-    internal static partial class Extensions
-    {
-        public static AlgoSeekOptionsReader EarliestTick(this IEnumerable<AlgoSeekOptionsReader> readers)
-        {
-            return readers.Aggregate((earliestTick, nextCandidate) => earliestTick.Current.Time <= nextCandidate.Current.Time ? earliestTick : nextCandidate);
-        }
+        }   
     }
 }

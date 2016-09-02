@@ -20,10 +20,8 @@ using System.Linq;
 using System.IO;
 using QuantConnect.Data.Market;
 
-
 namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
 {
-
     /// <summary>
     /// Enumerator for converting AlgoSeek option files into Ticks.
     /// </summary>
@@ -76,6 +74,12 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
             
         }
 
+        /// <summary>
+        /// Gets the current element in the collection.
+        /// </summary>
+        /// <returns>
+        /// The current element in the collection.
+        /// </returns>
         object IEnumerator.Current
         {
             get { return Current; }
@@ -173,6 +177,9 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
         }
     }
 
+    /// <summary>
+    /// Classify the option tick from AlgoSeek
+    /// </summary>
     class EventType
 	{
 		public static readonly EventType Trade = new EventType(false, TickType.Trade);

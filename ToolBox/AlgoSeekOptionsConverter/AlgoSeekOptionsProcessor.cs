@@ -16,8 +16,10 @@
 using System;
 using QuantConnect.Data;
 using System.Collections.Generic;
+using System.Linq;
 using QuantConnect.Data.Consolidators;
 using QuantConnect.Data.Market;
+using QuantConnect.Logging;
 
 namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
 {
@@ -53,7 +55,14 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
             _consolidator = new PassthroughConsolidator();
             if (resolution != Resolution.Tick)
             {
-                _consolidator = new TickQuoteBarConsolidator(resolution.ToTimeSpan());
+                if (tickType == TickType.Trade)
+                {
+                    _consolidator = new TickConsolidator(resolution.ToTimeSpan());
+                }
+                else
+                {
+                    _consolidator = new TickQuoteBarConsolidator(resolution.ToTimeSpan());
+                }
             }
             
             // On consolidating the bars put the bar into a queue in memory to be written to disk later.
@@ -93,7 +102,8 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
                 _queue.Enqueue(_consolidator.WorkingData);
             }
 
-            // Purge the queue to disk.
+            // Purge the queue to disk if there's work to do:
+            if (_queue.Count == 0) return;
             using (var writer = new LeanOptionsWriter(_destinationDirectory, _symbol, frontierTime, _resolution, _tickType))
             {
                 while (_queue.Count > 0)

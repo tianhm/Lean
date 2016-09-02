@@ -40,19 +40,16 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
             // Date for the option bz files.
             var referenceDate = DateTime.Parse(Config.Get("options-reference-date"));
 
-            // How many lines should we process before flushing the data to disk.
-            var flushInterval = 1000000L;
-
-
             // Convert the date:
             var timer = Stopwatch.StartNew();
-            var converter = new AlgoSeekOptionsConverter(referenceDate, sourceDirectory, destinationDirectory, flushInterval);
-            converter.Convert();
+            var converter = new AlgoSeekOptionsConverter(referenceDate, sourceDirectory, destinationDirectory);
+            converter.Convert(Resolution.Minute);
             Log.Trace(string.Format("AlgoSeekOptionConverter.Main(): {0} Conversion finished in time: {1}", referenceDate, timer.Elapsed));
 
             //Compress the date's separate CSV's into a single LEAN .zip file.
-            timer.Restart();
-            converter.Compress(destinationDirectory, 1);
+            //Using only 1 thread as the compression library has a static variable which crashes things.
+            timer.Restart(); 
+            converter.Compress(destinationDirectory);
             Log.Trace(string.Format("AlgoSeekOptionConverter.Main(): {0} Compression finished in time: {1}", referenceDate, timer.Elapsed));
         }
     }

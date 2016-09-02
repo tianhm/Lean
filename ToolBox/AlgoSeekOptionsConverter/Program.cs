@@ -16,6 +16,7 @@
 using System;
 using QuantConnect.Logging;
 using System.Diagnostics;
+using System.Globalization;
 using QuantConnect.Configuration;
 
 namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
@@ -38,7 +39,7 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
             var destinationDirectory = Config.Get("data-directory");
 
             // Date for the option bz files.
-            var referenceDate = DateTime.Parse(Config.Get("options-reference-date"));
+            var referenceDate = DateTime.ParseExact(Config.Get("options-reference-date"), DateFormat.EightCharacter, CultureInfo.InvariantCulture);
 
             // Convert the date:
             var timer = Stopwatch.StartNew();

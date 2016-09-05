@@ -36,21 +36,29 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
             var sourceDirectory = Config.Get("options-source-directory");
 
             //Root data output directory
-            var destinationDirectory = Config.Get("data-directory");
+            var dataDirectory = Config.Get("data-directory");
 
             // Date for the option bz files.
             var referenceDate = DateTime.ParseExact(Config.Get("options-reference-date"), DateFormat.EightCharacter, CultureInfo.InvariantCulture);
 
+            var inMemoryProcessing = Config.GetBool("options-in-memory-processing", true);
+
             // Convert the date:
             var timer = Stopwatch.StartNew();
-            var converter = new AlgoSeekOptionsConverter(referenceDate, sourceDirectory, destinationDirectory);
+            var converter = new AlgoSeekOptionsConverter(referenceDate, sourceDirectory, dataDirectory, inMemoryProcessing);
             converter.Convert(Resolution.Minute);
             Log.Trace(string.Format("AlgoSeekOptionConverter.Main(): {0} Conversion finished in time: {1}", referenceDate, timer.Elapsed));
 
             //Compress the date's separate CSV's into a single LEAN .zip file.
             //Using only 1 thread as the compression library has a static variable which crashes things.
-            timer.Restart(); 
-            converter.Compress(destinationDirectory);
+            timer.Restart();
+
+            if (inMemoryProcessing) { 
+                converter.Compress();
+            } else { 
+                converter.Compress(dataDirectory);
+            }
+
             Log.Trace(string.Format("AlgoSeekOptionConverter.Main(): {0} Compression finished in time: {1}", referenceDate, timer.Elapsed));
         }
     }

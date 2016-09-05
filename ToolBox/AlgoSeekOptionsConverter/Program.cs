@@ -18,6 +18,7 @@ using QuantConnect.Logging;
 using System.Diagnostics;
 using System.Globalization;
 using QuantConnect.Configuration;
+using QuantConnect.Util;
 
 namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
 {
@@ -31,6 +32,7 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
             // There are practical file limits we need to override for this to work. 
             // By default programs are only allowed 1024 files open; for options parsing we need 100k
             Environment.SetEnvironmentVariable("MONO_MANAGED_WATCHER", "disabled");
+            Log.LogHandler = new CompositeLogHandler(new ILogHandler[] { new ConsoleLogHandler(), new FileLogHandler("log.txt") });
 
             //Root directory for the source data:
             var sourceDirectory = Config.Get("options-source-directory");
@@ -54,9 +56,9 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
             timer.Restart();
 
             if (inMemoryProcessing) { 
-                converter.Compress();
+                converter.MemoryCompress();
             } else { 
-                converter.Compress(dataDirectory);
+                converter.DirectoryCompress(dataDirectory);
             }
 
             Log.Trace(string.Format("AlgoSeekOptionConverter.Main(): {0} Compression finished in time: {1}", referenceDate, timer.Elapsed));

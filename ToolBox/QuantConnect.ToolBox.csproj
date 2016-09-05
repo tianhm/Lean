@@ -146,6 +146,7 @@
     <Compile Include="AlgoSeekOptionsConverter\AlgoSeekOptionsConverter.cs" />
     <Compile Include="AlgoSeekOptionsConverter\AlgoSeekOptionsProcessor.cs" />
     <Compile Include="AlgoSeekOptionsConverter\AlgoSeekOptionsReader.cs" />
+    <Compile Include="AlgoSeekOptionsConverter\AlgoSeekParallelReader.cs" />
     <Compile Include="AlgoSeekOptionsConverter\LeanOptionsWriter.cs" />
     <Compile Include="AlgoSeekOptionsConverter\Program.cs" />
     <Compile Include="Bz2StreamProvider.cs" />

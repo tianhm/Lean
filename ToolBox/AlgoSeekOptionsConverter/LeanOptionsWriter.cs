@@ -33,8 +33,6 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
         /// </summary>
         public LeanOptionsWriter(string dataDirectory, Symbol symbol, DateTime date, Resolution resolution, TickType tickType)
         {
-            
-
             //Create a folder to store all the csv's in temporarily until zipped.
             var entry = LeanData.GenerateZipEntryName(symbol, date, resolution, tickType);
             var relativePath = LeanData.GenerateRelativeZipFilePath(symbol, date, resolution, tickType).Replace(".zip", string.Empty);
@@ -53,6 +51,15 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
         public void WriteEntry(BaseData data)
         {
             var line = LeanData.GenerateLine(data, data.Symbol.ID.SecurityType, _resolution);
+            _streamWriter.WriteLine(line);
+        }
+
+        /// <summary>
+        /// Wrapper to write the line rather than a whole basedata. Save memory on storing objects.
+        /// </summary>
+        /// <param name="line"></param>
+        public void WriteEntry(string line)
+        {
             _streamWriter.WriteLine(line);
         }
 
